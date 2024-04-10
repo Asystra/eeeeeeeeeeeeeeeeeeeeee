@@ -1,6 +1,7 @@
 package com.example.fitfurlife;
 
 import android.annotation.SuppressLint;
+import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
@@ -11,253 +12,192 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
 import android.content.Context;
+import android.os.ParcelUuid;
 import android.util.Log;
 
-import androidx.annotation.NonNull;
-
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
+import java.util.Collections;
 import java.util.UUID;
 
 public class BLEController {
 
-    private static final UUID uuid
-            = UUID.fromString("19b10000-e8f2-537e-4f6c-d104768a1214");
+    private static final String TAG = "BLEController";
+    private static final UUID IMU_SERVICE_UUID = UUID.fromString("19b10000-e8f2-537e-4f6c-d104768a1214");
+    private static final UUID SENSOR_CHARACTERISTIC_UUID = UUID.fromString("19b10003-e8f2-537e-4f6c-d104768a1214");
+
     private static BLEController instance;
+    private databaseHelper dbHelper;
+
 
     private BluetoothManager bluetoothManager;
-    private BluetoothDevice device;
-    private BluetoothGatt bluetoothGatt;
-    private BluetoothGattCharacteristic btGattCharGyro;
-    private BluetoothGattCharacteristic btGattCharAccel;
-
-    private ArrayList<BLEControllerListener> listeners = new ArrayList<>();
-
-    private HashMap<String, BluetoothDevice> devices = new HashMap<>();
     private BluetoothLeScanner scanner;
+    private BluetoothGatt bluetoothGatt;
+    private Context context;
 
     private BLEController(Context context) {
+        this.context = context;
         this.bluetoothManager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
+        this.dbHelper = new databaseHelper(context);
     }
 
-    public static BLEController getInstance(Context context) {
-        if (null == instance) {
-            instance = new BLEController((context));
+    public static synchronized BLEController getInstance(Context context) {
+        if (instance == null) {
+            instance = new BLEController(context);
         }
         return instance;
     }
 
-    public void addBLEControllerListener(BLEControllerListener l) {
-        if (!this.listeners.contains(l))
-            this.listeners.add(l);
-    }
-
-    public void removeBLEControllerListener(BLEControllerListener l) {
-        this.listeners.remove(l);
-    }
-
     @SuppressLint("MissingPermission")
     public void init() {
-        this.devices.clear();
-        this.scanner = this.bluetoothManager.getAdapter().getBluetoothLeScanner();
-        scanner.startScan(bleCallback);
+        BluetoothAdapter bluetoothAdapter = bluetoothManager.getAdapter();
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
+            Log.e(TAG, "Bluetooth is not enabled");
+            return;
+        }
+        this.scanner = bluetoothAdapter.getBluetoothLeScanner();
+        ScanFilter scanFilter = new ScanFilter.Builder().setServiceUuid(new ParcelUuid(IMU_SERVICE_UUID)).build();
+        ScanSettings settings = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
+        scanner.startScan(Collections.singletonList(scanFilter), settings, bleCallback);
+        Log.d(TAG, "Scan started");
     }
 
-    private ScanCallback bleCallback = new ScanCallback() {
+    private final ScanCallback bleCallback = new ScanCallback() {
         @SuppressLint("MissingPermission")
         @Override
         public void onScanResult(int callbackType, ScanResult result) {
             super.onScanResult(callbackType, result);
             BluetoothDevice device = result.getDevice();
-            if(!devices.containsKey(device.getAddress()) && isThisTheDevice(device)) {
-                deviceFound(device);
-            }
-        }
-
-        @SuppressLint("MissingPermission")
-        @Override
-        public void onBatchScanResults(List<ScanResult> results) {
-            super.onBatchScanResults(results);
-            for(ScanResult sr : results) {
-                BluetoothDevice device = sr.getDevice();
-                if(!devices.containsKey(device.getAddress()) && isThisTheDevice(device)) {
-                    deviceFound(device);
-                }
-            }
+            Log.d(TAG, "Device found: " + device.getName() + " - " + device.getAddress());
+            connectToDevice(device);
         }
 
         @Override
         public void onScanFailed(int errorCode) {
             super.onScanFailed(errorCode);
-            Log.i("[BLE]", "scan failed with errorcode " + errorCode);
+            Log.e(TAG, "Scan failed with error code: " + errorCode);
         }
     };
 
     @SuppressLint("MissingPermission")
-    private boolean isThisTheDevice(BluetoothDevice device) {
-        return null != device.getName() && device.getName().startsWith("FitFurLife");
+    private void connectToDevice(BluetoothDevice device) {
+        scanner.stopScan(bleCallback);
+        Log.d(TAG, "Connecting to device " + device.getAddress());
+        bluetoothGatt = device.connectGatt(context, true, gattCallback);
     }
 
-    private void deviceFound(BluetoothDevice device) {
-        this.devices.put(device.getAddress(), device);
-        fireDeviceFound(device);
-    }
-
-    @SuppressLint("MissingPermission")
-    public void connectToDevice(String address) {
-        this.device = this.devices.get(address);
-        this.scanner.stopScan(this.bleCallback);
-        Log.i("[BLE]","connect to device " + device.getAddress());
-        this.bluetoothGatt = device.connectGatt(null, false, this.bleConnectCallback);
-    }
-
-    private final BluetoothGattCallback bleConnectCallback = new BluetoothGattCallback() {
+    private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                bluetoothGatt.discoverServices();
-            }else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                btGattCharGyro = null;
-                btGattCharAccel = null;
-                fireDisconnected();
+                Log.d(TAG, "Connected to GATT server.");
+                gatt.discoverServices();
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                Log.d(TAG, "Disconnected from GATT server.");
+                init(); // Re-initiate scan
             }
         }
 
         @SuppressLint("MissingPermission")
         @Override
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-            if(status == BluetoothGatt.GATT_SUCCESS){
-                if(btGattCharGyro == null || btGattCharAccel == null) {
-                    for (BluetoothGattService service : gatt.getServices()) {
-                        if (service.getUuid().toString().toUpperCase().startsWith("19B10000")) {
-                            List<BluetoothGattCharacteristic> gattCharacteristics = service.getCharacteristics();
-                            for (BluetoothGattCharacteristic bgc : gattCharacteristics) {
-                                if (bgc.getUuid().toString().toUpperCase().startsWith("19B10001")) {
-                                    //Gyroscope input
-                                    int characteristicProperties = bgc.getProperties();
-                                    if (((characteristicProperties & BluetoothGattCharacteristic.PROPERTY_READ) | (characteristicProperties & BluetoothGattCharacteristic.PROPERTY_NOTIFY)) > 0) {
-                                        btGattCharGyro = bgc;
-                                        //Set local notifications
-                                        gatt.setCharacteristicNotification(bgc, true);
-                                        //Set remote notifications
-                                        BluetoothGattDescriptor descriptor = bgc.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
-                                        descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-                                        boolean success = bluetoothGatt.writeDescriptor(descriptor);
-                                        Log.d("[BLE]","writeDescriptor Status : " + success);
-                                        fireConnected();
-                                    }
-                                }
-                                if(bgc.getUuid().toString().toUpperCase().startsWith("19B10002")){
-                                    int characteristicProperties = bgc.getProperties();
-                                    if (((characteristicProperties & BluetoothGattCharacteristic.PROPERTY_READ) | (characteristicProperties & BluetoothGattCharacteristic.PROPERTY_NOTIFY)) > 0) {
-                                        btGattCharAccel = bgc;
-                                        //Set local notifications
-                                        gatt.setCharacteristicNotification(bgc, true);
-                                        //Set remote notifications
-                                        BluetoothGattDescriptor descriptor = bgc.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
-                                        descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-                                        boolean success = bluetoothGatt.writeDescriptor(descriptor);
-                                        Log.d("[BLE]", "writeDescriptor Status : " + success);
-                                        fireConnected();
-                                    }
-                                }
-                            }
-                        }
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                for (BluetoothGattService service : gatt.getServices()) {
+                    if (IMU_SERVICE_UUID.equals(service.getUuid())) {
+                        Log.d(TAG, "IMU service found.");
+                        subscribeToSensorCharacteristic(gatt, service);
                     }
                 }
-            }
-
-        }
-
-        @Override
-        public void onCharacteristicRead(@NonNull BluetoothGatt gatt, @NonNull BluetoothGattCharacteristic characteristic, int status) {
-            super.onCharacteristicRead(gatt, characteristic, status);
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                Log.d("[BLE]", "Characteristic read successfully");
-                fireRead(characteristic.getValue());
             } else {
-                Log.d("[BLE]", "Characteristic read failed with status: " + status);
+                Log.w(TAG, "onServicesDiscovered received: " + status);
             }
         }
 
-        @Override
-        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-            super.onCharacteristicWrite(gatt, characteristic, status);
-            //TODO: What happens when we write to the Arduino
-        }
 
         @Override
-        public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
-            super.onDescriptorWrite(gatt, descriptor, status);
-            if(status == BluetoothGatt.GATT_SUCCESS){
-                Log.d("[BLE]","write op to " + descriptor.toString()+" succeeded");
+        public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+            super.onCharacteristicChanged(gatt, characteristic);
+            if (SENSOR_CHARACTERISTIC_UUID.equals(characteristic.getUuid())) {
+                // Log that we've entered the characteristic changed method for the right UUID
+                Log.d(TAG, "onCharacteristicChanged: Combined sensor data characteristic changed.");
+
+                byte[] combinedData = characteristic.getValue();
+                // Log the raw combined data received
+                Log.d(TAG, "Received combined sensor data: " + Arrays.toString(combinedData));
+
+                if (combinedData.length >= 12) { // Ensure there's enough data for both sensors
+                    // Unpack the data
+                    float[] gyroData = unpackSensorData(Arrays.copyOfRange(combinedData, 0, 6));
+                    float[] accelData = unpackSensorData(Arrays.copyOfRange(combinedData, 6, 12));
+
+                    // Log the unpacked sensor data
+                    Log.d(TAG, String.format("Unpacked Gyro Data: X=%.2f, Y=%.2f, Z=%.2f", gyroData[0], gyroData[1], gyroData[2]));
+                    Log.d(TAG, String.format("Unpacked Accel Data: X=%.2f, Y=%.2f, Z=%.2f", accelData[0], accelData[1], accelData[2]));
+
+                    float gyroMagnitude = calculateMagnitude(gyroData);
+                    float accelMagnitude = calculateMagnitude(accelData);
+                    float currentTime = System.currentTimeMillis();
+
+                    // Log the magnitudes
+                    Log.d(TAG, "Gyro Magnitude: " + gyroMagnitude);
+                    Log.d(TAG, "Accel Magnitude: " + accelMagnitude);
+
+
+                    dbHelper.insertAll(new accGyro(0, accelMagnitude, gyroMagnitude, currentTime));
+                } else {
+                    // Log a warning if the received data does not have the expected length
+                    Log.w(TAG, "Received sensor data is not of expected length: " + combinedData.length);
+                }
             }
         }
 
-        @Override
-        public void onCharacteristicChanged(@NonNull BluetoothGatt gatt, @NonNull BluetoothGattCharacteristic characteristic, @NonNull byte[] value) {
-            super.onCharacteristicChanged(gatt, characteristic, value);
-            if(btGattCharAccel.equals(characteristic)){
-                byte[] data = characteristic.getValue();
-                Log.i("[DATA_ACCEL]", Arrays.toString(data));
-            }
-            if(btGattCharGyro.equals(characteristic)){
-                byte[] data = characteristic.getValue();
-                Log.i("[DATA_GYRO]", Arrays.toString(data));
+
+        private void subscribeToSensorCharacteristic(BluetoothGatt gatt, BluetoothGattService service) {
+            BluetoothGattCharacteristic characteristic = service.getCharacteristic(SENSOR_CHARACTERISTIC_UUID);
+            if (characteristic != null) {
+                gatt.setCharacteristicNotification(characteristic, true);
+                BluetoothGattDescriptor descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
+                if (descriptor != null) {
+                    descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                    boolean status = gatt.writeDescriptor(descriptor);
+                    Log.d(TAG, "Subscribed to SENSOR_CHARACTERISTIC_UUID: " + status);
+                } else {
+                    Log.e(TAG, "Failed to find descriptor for SENSOR_CHARACTERISTIC_UUID");
+                }
+            } else {
+                Log.e(TAG, "Characteristic with UUID SENSOR_CHARACTERISTIC_UUID not found");
             }
         }
+
+
     };
-
-    private void fireDisconnected() {
-        for (BLEControllerListener l : this.listeners)
-            l.BLEControllerDisconnected();
-
-        this.device = null;
-    }
-
-    private void fireConnected() {
-        for (BLEControllerListener l : this.listeners)
-            l.BLEControllerConnected();
-    }
-
-    @SuppressLint("MissingPermission")
-    private void fireDeviceFound(BluetoothDevice device) {
-        for (BLEControllerListener l : this.listeners)
-            l.BLEDeviceFound(device.getName().trim(), device.getAddress());
-    }
-
-    private void fireRead(byte[] value){
-        for (BLEControllerListener l : this.listeners)
-            l.BLERead(value);
-    }
 
     @SuppressLint("MissingPermission")
     public void disconnect() {
-        this.bluetoothGatt.disconnect();
+        if (bluetoothGatt != null) {
+            bluetoothGatt.disconnect();
+            bluetoothGatt.close();
+            bluetoothGatt = null;
+            Log.d(TAG, "Disconnected and resources released");
+        }
     }
 
-    @SuppressLint("MissingPermission")
-    public void read(String name) {
-        if ("gyro".equals(name) && btGattCharGyro != null) {
-            if ((btGattCharGyro.getProperties() & BluetoothGattCharacteristic.PROPERTY_READ) != 0) {
-                boolean res = bluetoothGatt.readCharacteristic(btGattCharGyro);
-                Log.d("[GYRO]", "readCharacteristic called, success: " + res);
-            } else {
-                Log.d("[GYRO]", "Characteristic does not support read");
-            }
-        } else if ("accel".equals(name) && btGattCharAccel != null) {
-            if ((btGattCharAccel.getProperties() & BluetoothGattCharacteristic.PROPERTY_READ) != 0) {
-                boolean res = bluetoothGatt.readCharacteristic(btGattCharAccel);
-                Log.d("[ACCEL]", "readCharacteristic called, success: " + res);
-            } else {
-                Log.d("[ACCEL]", "Characteristic does not support read");
-            }
+
+    private float[] unpackSensorData(byte[] data) {
+        float[] sensorData = new float[3];
+        for (int i = 0; i < 3; i++) {
+            int value = (data[i * 2] << 8) | (data[i * 2 + 1] & 0xFF);
+            sensorData[i] = value / 100.0f;
         }
+        return sensorData;
+    }
+
+    private float calculateMagnitude(float[] vector) {
+        return (float) Math.sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
     }
 
 }

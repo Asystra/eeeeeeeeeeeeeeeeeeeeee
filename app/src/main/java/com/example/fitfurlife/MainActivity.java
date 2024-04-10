@@ -1,251 +1,220 @@
 package com.example.fitfurlife;
 
-import android.app.Activity;
+import static android.app.PendingIntent.getActivity;
+
+import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.text.method.ScrollingMovementMethod;
-import android.view.View;
-import android.widget.Button;
-import android.widget.TextView;
-import android.widget.Toast;
-import android.Manifest;
 
-import androidx.activity.EdgeToEdge;
-import androidx.activity.result.ActivityResult;
-import androidx.activity.result.ActivityResultCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
-import java.util.Arrays;
 
-public class MainActivity extends AppCompatActivity implements BLEControllerListener {
+import java.util.ArrayList;
+import java.util.List;
 
-    private static final String TAG = "MainActivity";
-    private TextView logView;
-    private Button connectButton;
-    private Button disconnectButton;
-    private Button accelButton, gyroButton;
+import androidx.fragment.app.FragmentTransaction;
+import android.util.Log;
+import android.view.View;
+import android.widget.Button;
+import android.widget.TextView;
+
+
+public class MainActivity extends AppCompatActivity implements settingFrag.OnDogInfoUpdatedListener{
+    private static final int REQUEST_ENABLE_BT = 1;
+    private static final int REQUEST_FINE_LOCATION = 2;
     private BLEController bleController;
-    private String deviceAddress;
-    ActivityResultLauncher<Intent> activityResultLauncher = registerForActivityResult(
-            new ActivityResultContracts.StartActivityForResult(), new ActivityResultCallback<ActivityResult>() {
-                @Override
-                public void onActivityResult(ActivityResult result) {
-                    if (result.getResultCode() == Activity.RESULT_OK) {
-                        Toast.makeText(MainActivity.this, "Bluetooth Enabled!", Toast.LENGTH_SHORT).show();
-                    } else {
-                        //Bluetooth enable refused
-                        MainActivity.this.finish();
-                    }
-                }
-            }
-    );
+    private static final int REQUEST_PERMISSIONS = 101;
+    private ActivityResultLauncher<Intent> enableBtResultLauncher;
+    private Button settingButton;
+    private Button debugButton;
+    private TextView dogAge;
+    private TextView dogWeight;
+    private TextView dogRace;
+    private TextView pastHourRest;
+    private TextView pastDayRest;
+    private TextView pastWeekRest;
+    private TextView pastHourActive;
+    private TextView pastDayActive;
+    private TextView pastWeekActive;
 
-    private void initConnectButton() {
-        this.connectButton = findViewById(R.id.connectButton);
-        this.connectButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                connectButton.setEnabled(false);
-                log("Connecting...");
-                bleController.connectToDevice(deviceAddress);
+
+    private void requestPermissionsIfNeeded() {
+        List<String> requiredPermissions = new ArrayList<>();
+        requiredPermissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_SCAN);
+            requiredPermissions.add(Manifest.permission.BLUETOOTH_CONNECT);
+        }
+
+        List<String> permissionsToRequest = new ArrayList<>();
+        for (String permission : requiredPermissions) {
+            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(permission);
             }
-        });
+        }
+
+        if (!permissionsToRequest.isEmpty()) {
+            ActivityCompat.requestPermissions(this, permissionsToRequest.toArray(new String[0]), REQUEST_PERMISSIONS);
+        } else {
+            // All permissions are granted, proceed with initializing BLE
+            initBLE();
+        }
     }
 
-    private void initDisconnectButton() {
-        this.disconnectButton = findViewById(R.id.disconnectButton);
-        this.disconnectButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                disconnectButton.setEnabled(false);
-                log("Disconnecting...");
-                bleController.disconnect();
-            }
-        });
-    }
-
-    private void initAccelButton(){
-        this.accelButton = findViewById(R.id.accelButton);
-        this.accelButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                bleController.read("accel");
-            }
-        });
-    }
-
-    private void initGyroButton(){
-        this.gyroButton = findViewById(R.id.gyroButton);
-        this.gyroButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                bleController.read("gyro");
-            }
-        });
-    }
-
-    private void disableButtons() {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                connectButton.setEnabled(false);
-                disconnectButton.setEnabled(false);
-                accelButton.setEnabled(false);
-                gyroButton.setEnabled(false);
-            }
-        });
-    }
-
-    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
-            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
-            return insets;
-        });
+        linkObj();
+        setup();
+        Log.d("MainActivity", "onCreate started.");
+        // Initialize the ActivityResultLauncher
+        enableBtResultLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK) {
+                        // Bluetooth has been enabled, initialize BLE operation.
+                        bleController.init();
+                    } else {
+                        // Handle the case where the user declined to enable Bluetooth
+                    }
+                });
 
-        this.logView = findViewById(R.id.logView);
-        this.logView.setMovementMethod(new ScrollingMovementMethod());
-        checkBLESupport();
-        checkPermissions();
-        this.bleController = BLEController.getInstance(this);
-        initConnectButton();
-        initDisconnectButton();
-        initAccelButton();
-        initGyroButton();
-        disableButtons();
+        requestPermissionsIfNeeded();
+        databaseHelper dbHelper = new databaseHelper(this);
+        if (dbHelper.getAllDogProfiles().isEmpty()) {
+            // No profiles exist, show profile creation fragment
+            loadCreationFragment();
+        } else {
+            // Profiles exist, show profile selection fragment
+            loadSelectionFragment();
+        }
+
+        settingButton.setOnClickListener(v -> loadSettingFragment());
+        debugButton.setOnClickListener(v -> loadDebugFragment());
+
     }
 
-    private void log(final String text) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                String tmp = logView.getText() + "\n" + text;
-                logView.setText(tmp);
-            }
-        });
+    private void linkObj(){
+        settingButton = findViewById(R.id.buttonSetting);
+        debugButton = findViewById(R.id.buttonDebug);
+        dogAge = findViewById(R.id.textViewMainAge);
+        dogWeight = findViewById(R.id.textViewMainWeight);
+        dogRace = findViewById(R.id.textViewMainBreed);
+        pastHourRest = findViewById(R.id.textViewMainRestPastHour);
+        pastDayRest = findViewById(R.id.textViewMainRestPastDay);
+        pastWeekRest = findViewById(R.id.textViewMainRestPastWeek);
+        pastHourActive = findViewById(R.id.textViewMainActivePastHour);
+        pastDayActive = findViewById(R.id.textViewMainActivePastDay);
+        pastWeekActive = findViewById(R.id.textViewMainActivePastWeek);
+
     }
 
-    private void checkBLESupport() {
-        // Check if Bluetooth Low Energy is supported on the device.
-        if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
-            Toast.makeText(this, "BLE not supported!", Toast.LENGTH_SHORT).show();
-            finish();
+    private void setup(){
+        databaseHelper dbHelper = new databaseHelper(this);
+
+        String dogage = Integer.toString(dbHelper.getDogAgeById(1));
+        String dogweight = Float.toString(dbHelper.getDogWeightById(1));
+        String dograce = dbHelper.getDogRaceById(1);
+        dogAge.setText(dogage);
+        dogWeight.setText(dogweight);
+        dogRace.setText(dograce);
+    }
+    private void loadCreationFragment() {
+        Log.d("MainActivity", "Loading fragment: Creation");
+        profileCreationFrag addProfileFragment = new profileCreationFrag();
+        FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        // Replace whatever is in the fragment_container view with this fragment,
+        // and add the transaction to the back stack so the user can navigate back
+        transaction.replace(R.id.fragmentContainer, addProfileFragment, "CREATION_FRAGMENT_TAG");
+        transaction.addToBackStack(null);
+        // Commit the transaction
+        transaction.commit();
+    }
+
+    @Override
+    public void onDogInfoUpdated() {
+        setup();
+        Log.d("MainActivity", "Updated");
+    }
+
+    private void loadSelectionFragment() {
+        Log.d("MainActivity", "Loading fragment: Selection");
+        profileSelectionFragAlone addProfileFragment = new profileSelectionFragAlone();
+        FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        transaction.replace(R.id.fragmentContainer, addProfileFragment, "SELECTION_FRAGMENT_TAG");
+        transaction.addToBackStack(null);
+        transaction.commit();
+    }
+
+    private void loadSettingFragment(){
+        Log.d("MainActivity", "Loading fragment: Selection");
+        settingFrag addProfileFragment = new settingFrag();
+        FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        transaction.replace(R.id.fragmentContainer, addProfileFragment, "SETTING_FRAGMENT_TAG");
+        transaction.addToBackStack(null);
+        transaction.commit();
+    }
+
+    private void loadDebugFragment(){
+        Log.d("MainActivity", "Loading fragment: debug");
+        debugFrag addProfileFragment = new debugFrag();
+        FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
+        transaction.replace(R.id.fragmentContainer, addProfileFragment, "DEBUG_FRAGMENT_TAG");
+        transaction.addToBackStack(null);
+        transaction.commit();
+    }
+
+
+    private void initBLE() {
+        // Initialize BLEController
+        bleController = BLEController.getInstance(this);
+
+        // Check if Bluetooth is enabled
+        BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
+            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            enableBtResultLauncher.launch(enableBtIntent);
+        } else {
+            // Bluetooth is enabled, initialize BLE operation
+            bleController.init();
         }
     }
 
-
-    private void checkPermissions() {
-        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
-                    != PackageManager.PERMISSION_GRANTED) {
-                log("\"Bluetooth Connect\" permission not granted yet!");
-                log("Without this permission Bluetooth devices cannot be searched!");
-                ActivityCompat.requestPermissions(this,
-                        new String[]{Manifest.permission.BLUETOOTH_CONNECT},42
-                );
-            }
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
-                    != PackageManager.PERMISSION_GRANTED) {
-                log("\"Bluetooth Scan\" permission not granted yet!");
-                log("Without this permission Bluetooth devices cannot be searched!");
-                ActivityCompat.requestPermissions(this,
-                        new String[]{Manifest.permission.BLUETOOTH_SCAN},42
-                );
-            }
-        }
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            log("\"Access Fine Location\" permission not granted yet!");
-            log("Without this permission Bluetooth devices cannot be searched!");
-            ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
-                    42);
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        switch (requestCode) {
+            case REQUEST_FINE_LOCATION:
+                if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    // Permission was granted, initialize BLE.
+                    initBLE();
+                } else {
+                    // Permission denied, show a message to the user.
+                }
+                break;
         }
     }
 
     @Override
-    protected void onStart() {
-        super.onStart();
-
-        checkPermissions();
-        if(!BluetoothAdapter.getDefaultAdapter().isEnabled()){
-            Intent enableBTIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            activityResultLauncher.launch(enableBTIntent);
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_ENABLE_BT && resultCode == RESULT_OK) {
+            // Bluetooth has been enabled, initialize BLE operation.
+            bleController.init();
         }
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        this.bleController.addBLEControllerListener(this);
-        if(ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED) {
-            log("[BLE]\tSearching for Fit Fur Life device...");
-            this.bleController.init();
-        }
+    protected void onDestroy() {
+        super.onDestroy();
+        bleController.disconnect(); // Ensure resources are released properly
     }
 
-    @Override
-    protected void onPause() {
-        super.onPause();
-        this.bleController.removeBLEControllerListener(this);
-    }
-
-    @Override
-    public void BLEControllerConnected() {
-        log("[BLE]\tConnected");
-        disableButtons();
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                disconnectButton.setEnabled(true);
-                accelButton.setEnabled(true);
-                gyroButton.setEnabled(true);
-            }
-        });
-    }
-
-    @Override
-    public void BLEControllerDisconnected() {
-        log("[BLE]\tDisconnected");
-        disableButtons();
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                connectButton.setEnabled(true);
-            }
-        });
-    }
-
-    @Override
-    public void BLEDeviceFound(String name, String address) {
-        log("Device " + name + " found with address " + address);
-        this.deviceAddress = address;
-        this.connectButton.setEnabled(true);
-    }
-
-    @Override
-    public void BLERead(byte[] value) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                String data = Arrays.toString(value);
-                log("[BLE Read] " + data);
-            }
-        });
-    }
 }
